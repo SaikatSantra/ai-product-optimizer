@@ -1,0 +1,48 @@
+// {
+//   "include": ["env.d.ts", "**/*.ts", "**/*.tsx", ".react-router/types/**/*"],
+//   "compilerOptions": {
+//     "lib": ["DOM", "DOM.Iterable", "ES2022"],
+//     "strict": true,
+//     "skipLibCheck": true,
+//     "isolatedModules": true,
+//     "allowSyntheticDefaultImports": true,
+//     "removeComments": false,
+//     "forceConsistentCasingInFileNames": true,
+//     "noEmit": true,
+//     "allowJs": true,
+//     "resolveJsonModule": true,
+//     "jsx": "react-jsx",
+//     "module": "ESNext",
+//     "moduleResolution": "Bundler",
+//     "target": "ES2022",
+//     "baseUrl": ".",
+//     "types": ["@react-router/node", "vite/client", "@shopify/polaris-types"],
+//     "rootDirs": [".", "./.react-router/types"]
+//   }
+// }
+{
+  "include": ["env.d.ts", "**/*.ts", "**/*.tsx", ".react-router/types/**/*"],
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noImplicitAny": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "removeComments": false,
+    "baseUrl": ".",
+    "paths": {
+      "~/*": ["./app/*"]
+    },
+    "types": ["@react-router/node", "vite/client", "@shopify/polaris-types"],
+    "rootDirs": [".", "./.react-router/types"]
+  }
+}
