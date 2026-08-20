@@ -1,30 +1,99 @@
 import type { ActionFunctionArgs } from "react-router";
-
 import { authenticate } from "../shopify.server";
+import { analyzeProductWithAI } from "../services/ai.server";
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
+
+type ProductData = {
+  id: string;
+  title: string;
+  handle: string;
+  description: string;
+  productType: string;
+  vendor: string;
+  tags: string[];
+  seo: {
+    title: string | null;
+    description: string | null;
+  };
+};
+
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Action                                                                     */
+/* -------------------------------------------------------------------------- */
 
 export async function action({ request }: ActionFunctionArgs) {
   try {
+    /* ---------------------------------------------------------------------- */
+    /* Authenticate Shopify                                                   */
+    /* ---------------------------------------------------------------------- */
+
     const { admin } = await authenticate.admin(request);
+
+    /* ---------------------------------------------------------------------- */
+    /* Check request method                                                   */
+    /* ---------------------------------------------------------------------- */
+
+    if (request.method !== "POST") {
+      return jsonResponse(
+        {
+          success: false,
+          error: "Method not allowed.",
+        },
+        405,
+      );
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* Read request body                                                      */
+    /* ---------------------------------------------------------------------- */
 
     const body = await request.json();
 
-    const productId = body.productId;
+    const productId = body?.productId;
 
-    if (!productId) {
-      return Response.json(
+    if (!productId || typeof productId !== "string") {
+      return jsonResponse(
         {
           success: false,
           error: "Product ID is required.",
         },
-        {
-          status: 400,
-        },
+        400,
       );
     }
 
+    /* ---------------------------------------------------------------------- */
+    /* Convert product ID to Shopify GID                                      */
+    /* ---------------------------------------------------------------------- */
+
+    const productGid = productId.startsWith("gid://")
+      ? productId
+      : `gid://shopify/Product/${productId}`;
+
+    console.log("[AI Product Optimizer] Analyzing product:", productGid);
+
+    /* ---------------------------------------------------------------------- */
+    /* Load product from Shopify                                              */
+    /* ---------------------------------------------------------------------- */
+
     const response = await admin.graphql(
       `#graphql
-        query AnalyzeProduct($id: ID!) {
+        query GetProductForAnalysis($id: ID!) {
           product(id: $id) {
             id
             title
@@ -32,241 +101,105 @@ export async function action({ request }: ActionFunctionArgs) {
             description
             productType
             vendor
-            status
             tags
 
             seo {
               title
               description
             }
-
-            featuredImage {
-              url
-              altText
-            }
           }
         }
       `,
       {
         variables: {
-          id: productId,
+          id: productGid,
         },
       },
     );
 
-    const responseJson = await response.json();
+    const responseJson = (await response.json()) as {
+      data?: {
+        product?: ProductData | null;
+      };
+
+      errors?: unknown[];
+    };
+
+    /* ---------------------------------------------------------------------- */
+    /* Shopify GraphQL errors                                                 */
+    /* ---------------------------------------------------------------------- */
 
     if (responseJson.errors?.length) {
       console.error(
-        "[AI Product Optimizer] GraphQL error:",
+        "[AI Product Optimizer] Shopify GraphQL error:",
         responseJson.errors,
       );
 
-      return Response.json(
+      return jsonResponse(
         {
           success: false,
-          error: "Unable to load product from Shopify.",
+          error: "Shopify could not load the product.",
         },
-        {
-          status: 500,
-        },
+        500,
       );
     }
+
+    /* ---------------------------------------------------------------------- */
+    /* Product not found                                                      */
+    /* ---------------------------------------------------------------------- */
 
     const product = responseJson.data?.product;
 
     if (!product) {
-      return Response.json(
+      return jsonResponse(
         {
           success: false,
           error: "Product not found.",
         },
-        {
-          status: 404,
-        },
+        404,
       );
     }
 
-    /*
-     * ---------------------------------------------------------------
-     * Temporary analysis
-     * ---------------------------------------------------------------
-     *
-     * This is NOT the real AI yet.
-     *
-     * We are first proving that:
-     *
-     * Product page
-     *      ↓
-     * API
-     *      ↓
-     * Shopify
-     *      ↓
-     * Analysis
-     *      ↓
-     * Product page
-     *
-     * works correctly.
-     */
+    /* ---------------------------------------------------------------------- */
+    /* AI Analysis                                                            */
+    /* ---------------------------------------------------------------------- */
 
-    const description = product.description?.trim() ?? "";
+    console.log(
+      "[AI Product Optimizer] Sending product to AI service:",
+      product.id,
+    );
 
-    const title = product.title?.trim() ?? "";
+    const analysis = await analyzeProductWithAI({
+      title: product.title,
+      description: product.description,
+      productType: product.productType,
+      vendor: product.vendor,
+      tags: product.tags,
+      seoTitle: product.seo?.title ?? null,
+      seoDescription: product.seo?.description ?? null,
+    });
 
-    const seoTitle = product.seo?.title?.trim() ?? "";
+    /* ---------------------------------------------------------------------- */
+    /* Success                                                                */
+    /* ---------------------------------------------------------------------- */
 
-    const seoDescription = product.seo?.description?.trim() ?? "";
+    console.log("[AI Product Optimizer] Analysis completed:", product.id);
 
-    const tags = product.tags ?? [];
-
-    const checks = {
-      title: title.length > 0,
-      description: description.length > 0,
-      seoTitle: seoTitle.length > 0,
-      seoDescription: seoDescription.length > 0,
-      tags: tags.length > 0,
-    };
-
-    const passedChecks = Object.values(checks).filter(Boolean).length;
-
-    const totalChecks = Object.values(checks).length;
-
-    const score = Math.round((passedChecks / totalChecks) * 100);
-
-    const status =
-      score === 100 ? "optimized" : score >= 60 ? "partial" : "needs_work";
-
-    /*
-     * Temporary recommendations.
-     *
-     * These will later be generated by AI.
-     */
-
-    const analysis = {
-      score,
-
-      summary:
-        score === 100
-          ? "Your product content currently meets the basic optimization checks."
-          : "Your product has several opportunities to improve SEO, discoverability and conversion.",
-
-      title: {
-        current: title,
-
-        suggested: title || "Improve your product title with relevant keywords",
-
-        reason: title
-          ? "The current title is available. AI can later improve its keyword relevance, clarity and conversion potential."
-          : "A clear product title helps shoppers and search engines understand the product.",
-      },
-
-      description: {
-        current: description,
-
-        suggested:
-          description ||
-          "Add a detailed product description explaining the product's key features, benefits and use cases.",
-
-        reason: description
-          ? "The product has description content. AI can improve its structure, clarity and search relevance."
-          : "A detailed product description helps customers understand the product and provides useful search context.",
-      },
-
-      seo: {
-        title: {
-          current: product.seo?.title ?? null,
-
-          suggested: seoTitle || `${title} | Shop Now`,
-
-          reason: seoTitle
-            ? "An SEO title already exists and can be refined further."
-            : "Adding an SEO title gives search engines a clearer page title.",
-        },
-
-        description: {
-          current: product.seo?.description ?? null,
-
-          suggested:
-            seoDescription ||
-            `Discover ${title}. Learn more about this product, its features and benefits.`,
-
-          reason: seoDescription
-            ? "An SEO description already exists and can be improved for relevance and click-through rate."
-            : "An SEO description can improve how the product appears in search results.",
-        },
-      },
-
-      tags: {
-        current: tags,
-
-        suggested: tags.length > 0 ? tags : ["product", "shopify", "featured"],
-
-        reason:
-          tags.length > 0
-            ? "Existing tags can later be analyzed and expanded using AI."
-            : "Relevant product tags can improve organization and discoverability.",
-      },
-
-      recommendations: [
-        {
-          priority: title.length > 0 ? "medium" : "high",
-
-          category: "Product title",
-
-          recommendation:
-            title.length > 0
-              ? "Review the product title for keyword relevance and clarity."
-              : "Add a descriptive product title containing the most important product keywords.",
-        },
-
-        {
-          priority: description.length > 0 ? "medium" : "high",
-
-          category: "Description",
-
-          recommendation:
-            description.length > 0
-              ? "Improve the structure and readability of the product description."
-              : "Add a detailed product description covering features, benefits and use cases.",
-        },
-
-        {
-          priority:
-            seoTitle.length > 0 && seoDescription.length > 0 ? "low" : "high",
-
-          category: "SEO",
-
-          recommendation:
-            seoTitle.length > 0 && seoDescription.length > 0
-              ? "Review SEO metadata for keyword relevance."
-              : "Add missing SEO metadata to improve search visibility.",
-        },
-      ],
-    };
-
-    return Response.json({
+    return jsonResponse({
       success: true,
-
-      product: {
-        id: product.id,
-        title: product.title,
-      },
-
+      productId: product.id,
       analysis,
-
-      status,
     });
   } catch (error) {
-    console.error("[AI Product Optimizer] Analysis failed:", error);
+    console.error("[AI Product Optimizer] Analyze product failed:", error);
 
-    return Response.json(
+    return jsonResponse(
       {
         success: false,
-        error: "Product analysis failed.",
+        error:
+          error instanceof Error ? error.message : "Unable to analyze product.",
       },
-      {
-        status: 500,
-      },
+      500,
     );
   }
 }

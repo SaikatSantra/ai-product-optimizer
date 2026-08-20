@@ -1,3 +1,5 @@
+import { generateGeminiText } from "./gemini.server";
+
 export type AIRecommendationPriority = "high" | "medium" | "low";
 
 export type AIProductAnalysis = {
@@ -54,173 +56,299 @@ export type AIProductInput = {
   seoDescription: string | null;
 };
 
-/**
- * AI product analysis service.
- *
- * This function is intentionally kept independent from Shopify.
- * Later we can connect OpenAI, Gemini, Anthropic, or another
- * provider without changing the route architecture.
- */
+/* -------------------------------------------------------------------------- */
+/* Provider types                                                             */
+/* -------------------------------------------------------------------------- */
+
+type AIProvider = "gemini" | "openai";
+
+/* -------------------------------------------------------------------------- */
+/* Provider detection                                                         */
+/* -------------------------------------------------------------------------- */
+
+function getAvailableProvider(): AIProvider {
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const hasOpenAI = Boolean(process.env.OPENAI_API_KEY?.trim());
+
+  /*
+   * Gemini has priority when both keys are configured.
+   *
+   * This means:
+   *
+   * Gemini only  -> Gemini
+   * OpenAI only  -> OpenAI
+   * Both         -> Gemini
+   * Neither      -> error
+   */
+
+  if (hasGemini) {
+    return "gemini";
+  }
+
+  if (hasOpenAI) {
+    return "openai";
+  }
+
+  throw new Error(
+    "No AI provider is configured. Add GEMINI_API_KEY or OPENAI_API_KEY.",
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Prompt                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function buildProductAnalysisPrompt(product: AIProductInput): string {
+  return `
+You are an expert Shopify eCommerce, SEO and conversion optimization specialist.
+
+Analyze the following Shopify product.
+
+PRODUCT:
+
+Title:
+${product.title}
+
+Description:
+${product.description}
+
+Product Type:
+${product.productType}
+
+Vendor:
+${product.vendor}
+
+Tags:
+${product.tags.join(", ")}
+
+SEO Title:
+${product.seoTitle ?? ""}
+
+SEO Description:
+${product.seoDescription ?? ""}
+
+Your task is to provide an optimized analysis.
+
+Return ONLY valid JSON.
+
+Do not use markdown.
+Do not wrap the JSON in \`\`\`.
+Do not add explanations outside the JSON.
+
+Use exactly this structure:
+
+{
+  "score": 0,
+  "summary": "string",
+
+  "title": {
+    "current": "string",
+    "suggested": "string",
+    "reason": "string"
+  },
+
+  "description": {
+    "current": "string",
+    "suggested": "string",
+    "reason": "string"
+  },
+
+  "seo": {
+    "title": {
+      "current": "string or null",
+      "suggested": "string",
+      "reason": "string"
+    },
+    "description": {
+      "current": "string or null",
+      "suggested": "string",
+      "reason": "string"
+    }
+  },
+
+  "tags": {
+    "current": [],
+    "suggested": [],
+    "reason": "string"
+  },
+
+  "recommendations": [
+    {
+      "priority": "high",
+      "category": "string",
+      "recommendation": "string"
+    }
+  ]
+}
+
+Important:
+
+- score must be between 0 and 100.
+- title.suggested should be clear, descriptive and useful for Shopify SEO.
+- description.suggested should be detailed and conversion-focused.
+- SEO title should normally be approximately 50-60 characters.
+- SEO description should normally be approximately 140-160 characters.
+- Suggested tags should be relevant to the product.
+- recommendations priority must be exactly "high", "medium", or "low".
+- Keep the recommendations practical.
+`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* JSON cleaning                                                              */
+/* -------------------------------------------------------------------------- */
+
+function cleanAIResponse(response: string): string {
+  return response
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+/* -------------------------------------------------------------------------- */
+/* JSON validation                                                            */
+/* -------------------------------------------------------------------------- */
+
+function parseAnalysis(response: string): AIProductAnalysis {
+  const cleanedResponse = cleanAIResponse(response);
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(cleanedResponse);
+  } catch (error) {
+    console.error("[AI Product Optimizer] Invalid AI JSON:", response);
+
+    throw new Error("AI returned an invalid analysis response.");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI returned an invalid analysis.");
+  }
+
+  const analysis = parsed as AIProductAnalysis;
+
+  if (
+    typeof analysis.score !== "number" ||
+    typeof analysis.summary !== "string" ||
+    !analysis.title ||
+    !analysis.description ||
+    !analysis.seo ||
+    !analysis.tags ||
+    !Array.isArray(analysis.recommendations)
+  ) {
+    throw new Error("AI returned an incomplete product analysis.");
+  }
+
+  return analysis;
+}
+
+/* -------------------------------------------------------------------------- */
+/* OpenAI                                                                     */
+/* -------------------------------------------------------------------------- */
+
+async function generateOpenAIText(prompt: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not configured.");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an expert Shopify product optimization and SEO assistant.",
+        },
+
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+
+      temperature: 0.4,
+    }),
+  });
+
+  const data = (await response.json()) as {
+    choices?: {
+      message?: {
+        content?: string | null;
+      };
+    }[];
+
+    error?: {
+      message?: string;
+    };
+  };
+
+  if (!response.ok) {
+    console.error("[OpenAI] API error:", data.error ?? data);
+
+    throw new Error(
+      data.error?.message ||
+        `OpenAI request failed with status ${response.status}.`,
+    );
+  }
+
+  const text = data.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error("OpenAI returned an empty response.");
+  }
+
+  return text;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Main AI service                                                            */
+/* -------------------------------------------------------------------------- */
+
 export async function analyzeProductWithAI(
   product: AIProductInput,
 ): Promise<AIProductAnalysis> {
-  /*
-   * Temporary deterministic analysis.
-   *
-   * This is NOT the final AI implementation.
-   * It gives us a stable response shape so we can build and
-   * test the complete Shopify application workflow first.
-   */
+  const provider = getAvailableProvider();
 
-  const titleLength = product.title.trim().length;
-  const descriptionLength = product.description.trim().length;
+  console.log(`[AI Product Optimizer] Using AI provider: ${provider}`);
 
-  let score = 100;
+  const prompt = buildProductAnalysisPrompt(product);
 
-  if (!product.title.trim()) {
-    score -= 25;
-  } else if (titleLength < 30) {
-    score -= 10;
+  let response: string;
+
+  try {
+    if (provider === "gemini") {
+      response = (await generateGeminiText(prompt)) ?? "";
+    } else {
+      response = await generateOpenAIText(prompt);
+    }
+  } catch (error) {
+    console.error(`[AI Product Optimizer] ${provider} analysis failed:`, error);
+
+    throw new Error(
+      `${provider === "gemini" ? "Gemini" : "OpenAI"} AI analysis failed: ${
+        error instanceof Error ? error.message : "Unknown AI error."
+      }`,
+    );
   }
 
-  if (!product.description.trim()) {
-    score -= 25;
-  } else if (descriptionLength < 300) {
-    score -= 15;
+  if (!response?.trim()) {
+    throw new Error(
+      `${provider === "gemini" ? "Gemini" : "OpenAI"} returned an empty response.`,
+    );
   }
 
-  if (!product.seoTitle?.trim()) {
-    score -= 15;
-  }
-
-  if (!product.seoDescription?.trim()) {
-    score -= 15;
-  }
-
-  if (product.tags.length === 0) {
-    score -= 10;
-  }
-
-  score = Math.max(0, Math.min(100, score));
-
-  const suggestedTitle =
-    product.title.trim() ||
-    `${product.productType || "Product"} by ${product.vendor || "Your Store"}`;
-
-  const suggestedDescription =
-    product.description.trim() ||
-    `Discover ${suggestedTitle}. Explore product details, features, and benefits designed to help customers make a confident purchase.`;
-
-  const suggestedSeoTitle =
-    product.seoTitle?.trim() ||
-    `${suggestedTitle} | ${product.vendor || "Shop Online"}`;
-
-  const suggestedSeoDescription =
-    product.seoDescription?.trim() ||
-    `Shop ${suggestedTitle}. Discover product details, key features, and benefits from ${product.vendor || "our store"}.`;
-
-  const suggestedTags =
-    product.tags.length > 0
-      ? product.tags
-      : [
-          product.productType || "product",
-          product.vendor || "shop",
-        ].filter(Boolean);
-
-  const recommendations: AIProductAnalysis["recommendations"] = [];
-
-  if (titleLength < 30) {
-    recommendations.push({
-      priority: "medium",
-      category: "Title",
-      recommendation:
-        "Make the product title more descriptive and include the most important customer-facing product attributes.",
-    });
-  }
-
-  if (descriptionLength < 300) {
-    recommendations.push({
-      priority: "high",
-      category: "Description",
-      recommendation:
-        "Expand the product description with useful product details, benefits, features, and information that helps customers make a purchase decision.",
-    });
-  }
-
-  if (!product.seoTitle?.trim()) {
-    recommendations.push({
-      priority: "high",
-      category: "SEO",
-      recommendation:
-        "Add a unique SEO title that clearly describes the product and targets relevant search intent.",
-    });
-  }
-
-  if (!product.seoDescription?.trim()) {
-    recommendations.push({
-      priority: "high",
-      category: "SEO",
-      recommendation:
-        "Add a compelling SEO description that explains the product and encourages qualified search users to visit the store.",
-    });
-  }
-
-  if (product.tags.length === 0) {
-    recommendations.push({
-      priority: "low",
-      category: "Tags",
-      recommendation:
-        "Add relevant product tags to improve organization, filtering, and internal product discovery.",
-    });
-  }
-
-  return {
-    score,
-
-    summary:
-      score >= 85
-        ? "This product has a strong content foundation with a few opportunities for improvement."
-        : score >= 60
-          ? "This product has several optimization opportunities that could improve search visibility and product quality."
-          : "This product needs significant content and SEO improvements before it can be considered well optimized.",
-
-    title: {
-      current: product.title,
-      suggested: suggestedTitle,
-      reason:
-        "The title should clearly communicate what the product is and include useful descriptive attributes.",
-    },
-
-    description: {
-      current: product.description,
-      suggested: suggestedDescription,
-      reason:
-        "A stronger description should explain the product, communicate benefits, and provide useful information for customers and search engines.",
-    },
-
-    seo: {
-      title: {
-        current: product.seoTitle,
-        suggested: suggestedSeoTitle,
-        reason:
-          "The SEO title should clearly describe the product and provide relevant search context.",
-      },
-
-      description: {
-        current: product.seoDescription,
-        suggested: suggestedSeoDescription,
-        reason:
-          "The SEO description should summarize the product clearly and encourage relevant search users to click.",
-      },
-    },
-
-    tags: {
-      current: product.tags,
-      suggested: suggestedTags,
-      reason:
-        "Relevant tags improve product organization and can support collection and filtering strategies.",
-    },
-
-    recommendations,
-  };
+  return parseAnalysis(response);
 }

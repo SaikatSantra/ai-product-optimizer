@@ -285,17 +285,16 @@ export default function ProductOptimizer() {
     setAnalysisError(null);
 
     try {
-      const response = await fetch("/api/analyze-product", {
+      const response = await fetch(`/app/products/${productId}/analyze`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          productId: product.id,
-        }),
       });
 
       const result = await response.json();
+
+      console.log("[AI Product Optimizer] Analyze response:", result);
 
       if (!response.ok || !result.success) {
         throw new Error(result.error || "Unable to analyze product.");
@@ -303,7 +302,7 @@ export default function ProductOptimizer() {
 
       setAnalysis(result.analysis);
     } catch (error) {
-      console.error("AI analysis failed:", error);
+      console.error("[AI Product Optimizer] AI analysis failed:", error);
 
       setAnalysisError(
         error instanceof Error ? error.message : "Unable to analyze product.",
@@ -389,24 +388,22 @@ export default function ProductOptimizer() {
               {isAnalyzing ? "Analyzing..." : "Start AI analysis"}
             </s-button>
           </div>
-
-          {analysisError && (
-            <div className="analysis-error">
-              <div className="analysis-error-icon">!</div>
-
-              <div>
-                <strong>Analysis failed</strong>
-
-                <p>{analysisError}</p>
-              </div>
-
-              <s-button variant="secondary" onClick={handleAnalyze}>
-                Try again
-              </s-button>
-            </div>
-          )}
         </section>
+        {analysisError && (
+          <div className="analysis-error">
+            <div className="analysis-error-icon">!</div>
 
+            <div>
+              <strong>Analysis failed</strong>
+
+              <p>{analysisError}</p>
+            </div>
+
+            <s-button variant="secondary" onClick={handleAnalyze}>
+              Try again
+            </s-button>
+          </div>
+        )}
         {/* ---------------------------------------------------------------- */}
         {/* Overview                                                         */}
         {/* ---------------------------------------------------------------- */}

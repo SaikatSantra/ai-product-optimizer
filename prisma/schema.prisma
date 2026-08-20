@@ -32,3 +32,16 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model ProductAnalysis {
+  id          String   @id @default(cuid())
+  shop        String
+  productId   String
+  contentHash String
+  analysis    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([shop, productId, contentHash])
+  @@index([shop, productId])
+}
