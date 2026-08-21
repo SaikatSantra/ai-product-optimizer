@@ -1,13 +1,20 @@
 import { useState } from "react";
-import { useFetcher } from "react-router";
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 
 import "../styles/product-optimizer.css";
 import "../styles/product-detail.css";
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
 
 type Product = {
   id: string;
@@ -18,10 +25,12 @@ type Product = {
   vendor: string;
   status: string;
   tags: string[];
+
   featuredImage: {
     url: string;
     altText: string | null;
   } | null;
+
   seo: {
     title: string | null;
     description: string | null;
@@ -77,6 +86,14 @@ type AIProductAnalysis = {
   }[];
 };
 
+type ProductUpdatePayload = {
+  title: string;
+  description: string;
+  seoTitle: string;
+  seoDescription: string;
+  tags: string[];
+};
+
 /* -------------------------------------------------------------------------- */
 /* Loader                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -95,16 +112,6 @@ export async function loader({
     });
   }
 
-  /*
-   * Dashboard URL:
-   *
-   * /app/products/123456789
-   *
-   * Shopify Admin GraphQL:
-   *
-   * gid://shopify/Product/123456789
-   */
-
   const productGid = id.startsWith("gid://")
     ? id
     : `gid://shopify/Product/${id}`;
@@ -115,8 +122,9 @@ export async function loader({
     `#graphql
       query GetProduct($id: ID!) {
         shop {
-            myshopifyDomain
+          myshopifyDomain
         }
+
         product(id: $id) {
           id
           title
@@ -148,12 +156,15 @@ export async function loader({
 
   const responseJson = (await response.json()) as {
     data?: {
-      product?: Product;
+      product?: Product | null;
       shop?: {
         myshopifyDomain: string;
-      };
+      } | null;
     };
-    errors?: unknown[];
+
+    errors?: {
+      message?: string;
+    }[];
   };
 
   if (responseJson.errors?.length) {
@@ -162,9 +173,15 @@ export async function loader({
       responseJson.errors,
     );
 
-    throw new Response("Shopify could not load this product.", {
-      status: 500,
-    });
+    throw new Response(
+      responseJson.errors
+        .map((error) => error.message)
+        .filter(Boolean)
+        .join(", ") || "Shopify could not load this product.",
+      {
+        status: 500,
+      },
+    );
   }
 
   const data = responseJson.data;
@@ -189,11 +206,355 @@ export async function loader({
 }
 
 /* -------------------------------------------------------------------------- */
+/* Action - Update product                                                    */
+/* -------------------------------------------------------------------------- */
+
+export async function action({ request, params }: ActionFunctionArgs) {
+  console.log("[AI Product Optimizer] Product update action called.");
+
+  if (request.method !== "POST") {
+    return Response.json(
+      {
+        success: false,
+        error: "Method not allowed.",
+      },
+      {
+        status: 405,
+      },
+    );
+  }
+
+  try {
+    /* ---------------------------------------------------------------------- */
+    /* Authenticate Shopify Admin                                             */
+    /* ---------------------------------------------------------------------- */
+
+    const { admin } = await authenticate.admin(request);
+
+    const id = params.id;
+
+    if (!id) {
+      return Response.json(
+        {
+          success: false,
+          error: "Product ID is required.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    const productGid = id.startsWith("gid://shopify/Product/")
+      ? id
+      : `gid://shopify/Product/${id}`;
+
+    console.log("[AI Product Optimizer] Updating product:", productGid);
+
+    /* ---------------------------------------------------------------------- */
+    /* Read request body                                                       */
+    /* ---------------------------------------------------------------------- */
+
+    const contentType = request.headers.get("content-type") || "";
+
+    let body: Partial<ProductUpdatePayload>;
+
+    if (contentType.includes("application/json")) {
+      body = await request.json();
+    } else {
+      const formData = await request.formData();
+
+      const tagsValue = formData.get("tags");
+
+      body = {
+        title: String(formData.get("title") || ""),
+        description: String(formData.get("description") || ""),
+        seoTitle: String(formData.get("seoTitle") || ""),
+        seoDescription: String(formData.get("seoDescription") || ""),
+        tags: typeof tagsValue === "string" ? JSON.parse(tagsValue) : [],
+      };
+    }
+
+    console.log("[AI Product Optimizer] Update request body:", body);
+
+    /* ---------------------------------------------------------------------- */
+    /* Validate                                                               */
+    /* ---------------------------------------------------------------------- */
+
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+
+    const description =
+      typeof body.description === "string" ? body.description : "";
+
+    const seoTitle =
+      typeof body.seoTitle === "string" ? body.seoTitle.trim() : "";
+
+    const seoDescription =
+      typeof body.seoDescription === "string" ? body.seoDescription.trim() : "";
+
+    const tags = Array.isArray(body.tags)
+      ? body.tags
+          .filter((tag): tag is string => typeof tag === "string")
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+      : [];
+
+    if (!title) {
+      return Response.json(
+        {
+          success: false,
+          error: "Product title cannot be empty.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    if (!description.trim()) {
+      return Response.json(
+        {
+          success: false,
+          error: "Product description cannot be empty.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    if (!seoTitle) {
+      return Response.json(
+        {
+          success: false,
+          error: "SEO title cannot be empty.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    if (!seoDescription) {
+      return Response.json(
+        {
+          success: false,
+          error: "SEO description cannot be empty.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* Shopify GraphQL mutation                                               */
+    /* ---------------------------------------------------------------------- */
+
+    const response = await admin.graphql(
+      `#graphql
+        mutation UpdateProduct($product: ProductUpdateInput!) {
+          productUpdate(product: $product) {
+            product {
+              id
+              title
+              handle
+              description
+              productType
+              vendor
+              status
+              tags
+
+              seo {
+                title
+                description
+              }
+            }
+
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `,
+      {
+        variables: {
+          product: {
+            id: productGid,
+
+            title,
+
+            descriptionHtml: description,
+
+            seo: {
+              title: seoTitle,
+              description: seoDescription,
+            },
+
+            tags,
+          },
+        },
+      },
+    );
+
+    /* ---------------------------------------------------------------------- */
+    /* Parse Shopify response                                                 */
+    /* ---------------------------------------------------------------------- */
+
+    const responseJson = (await response.json()) as {
+      data?: {
+        productUpdate?: {
+          product?: Product | null;
+
+          userErrors?: {
+            field?: string[];
+            message: string;
+          }[];
+        } | null;
+      };
+
+      errors?: {
+        message?: string;
+      }[];
+    };
+
+    console.log(
+      "[AI Product Optimizer] Shopify update response:",
+      JSON.stringify(responseJson, null, 2),
+    );
+
+    /* ---------------------------------------------------------------------- */
+    /* GraphQL errors                                                         */
+    /* ---------------------------------------------------------------------- */
+
+    if (responseJson.errors?.length) {
+      const graphqlMessage =
+        responseJson.errors
+          .map((error) => error.message)
+          .filter(Boolean)
+          .join(", ") || "Shopify returned a GraphQL error.";
+
+      console.error(
+        "[AI Product Optimizer] Shopify GraphQL errors:",
+        responseJson.errors,
+      );
+
+      return Response.json(
+        {
+          success: false,
+          error: graphqlMessage,
+        },
+        {
+          status: 500,
+        },
+      );
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* Mutation result                                                        */
+    /* ---------------------------------------------------------------------- */
+
+    const updateResult = responseJson.data?.productUpdate;
+
+    if (!updateResult) {
+      return Response.json(
+        {
+          success: false,
+          error: "Shopify did not return a product update result.",
+        },
+        {
+          status: 500,
+        },
+      );
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* Shopify user errors                                                    */
+    /* ---------------------------------------------------------------------- */
+
+    if (updateResult.userErrors && updateResult.userErrors.length > 0) {
+      const errorMessage = updateResult.userErrors
+        .map((error) => {
+          const field = error.field?.join(". ");
+
+          return field ? `${field}: ${error.message}` : error.message;
+        })
+        .join(", ");
+
+      console.error(
+        "[AI Product Optimizer] Shopify user errors:",
+        updateResult.userErrors,
+      );
+
+      return Response.json(
+        {
+          success: false,
+          error: errorMessage || "Shopify could not update the product.",
+          userErrors: updateResult.userErrors,
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* Make sure product was returned                                         */
+    /* ---------------------------------------------------------------------- */
+
+    if (!updateResult.product) {
+      return Response.json(
+        {
+          success: false,
+          error: "Shopify did not return the updated product.",
+        },
+        {
+          status: 500,
+        },
+      );
+    }
+
+    console.log(
+      "[AI Product Optimizer] Product updated successfully:",
+      updateResult.product.id,
+    );
+
+    /* ---------------------------------------------------------------------- */
+    /* Success                                                                */
+    /* ---------------------------------------------------------------------- */
+
+    return Response.json({
+      success: true,
+
+      message: "Product updated successfully in Shopify.",
+
+      product: updateResult.product,
+    });
+  } catch (error) {
+    console.error("[AI Product Optimizer] Product update failed:", error);
+
+    return Response.json(
+      {
+        success: false,
+
+        error:
+          error instanceof Error ? error.message : "Unable to update product.",
+      },
+      {
+        status: 500,
+      },
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
 function getSeoStatus(product: Product) {
   const hasTitle = Boolean(product.seo?.title?.trim());
+
   const hasDescription = Boolean(product.seo?.description?.trim());
 
   if (hasTitle && hasDescription) {
@@ -239,38 +600,73 @@ function getShopifyProductUrl(shopDomain: string, productId: string) {
 
 export default function ProductOptimizer() {
   const { product, shopDomain } = useLoaderData<typeof loader>();
-  const productId = product.id.split("/").pop() ?? "";
-  const fetcher = useFetcher();
+
+  const revalidator = useRevalidator();
+
+  /* ------------------------------------------------------------------------ */
+  /* Fetcher                                                                  */
+  /* ------------------------------------------------------------------------ */
+
+  const updateFetcher = useFetcher<{
+    success: boolean;
+    message?: string;
+    error?: string;
+    product?: Product;
+  }>();
+
+  /* ------------------------------------------------------------------------ */
+  /* State                                                                    */
+  /* ------------------------------------------------------------------------ */
+
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+
   const [analysis, setAnalysis] = useState<AIProductAnalysis | null>(null);
+
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  const productId = product.id.split("/").pop() ?? "";
+
   const seo = getSeoStatus(product);
+
   const descriptionLength = getDescriptionLength(product.description);
+
   const hasDescription = descriptionLength > 0;
+
   const hasSeoTitle = Boolean(product.seo?.title?.trim());
+
   const hasSeoDescription = Boolean(product.seo?.description?.trim());
+
   const hasTags = product.tags.length > 0;
+
   const checks = [
     {
       label: "Product title",
       description: "A clear product title is available.",
       passed: Boolean(product.title.trim()),
     },
+
     {
       label: "Product description",
       description: "The product contains descriptive content.",
       passed: hasDescription,
     },
+
     {
       label: "SEO title",
       description: "A dedicated SEO title is configured.",
       passed: hasSeoTitle,
     },
+
     {
       label: "SEO description",
       description: "A dedicated SEO description is configured.",
       passed: hasSeoDescription,
     },
+
     {
       label: "Product tags",
       description: "The product has searchable tags.",
@@ -280,23 +676,47 @@ export default function ProductOptimizer() {
 
   const completedChecks = checks.filter((check) => check.passed).length;
 
+  /* ------------------------------------------------------------------------ */
+  /* AI Analysis                                                              */
+  /* ------------------------------------------------------------------------ */
+
   async function handleAnalyze() {
     setIsAnalyzing(true);
+
     setAnalysisError(null);
+    setUpdateError(null);
+    setUpdateMessage(null);
 
     try {
       const response = await fetch(`/app/products/${productId}/analyze`, {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
+
+          Accept: "application/json",
         },
       });
 
-      const result = await response.json();
+      const responseText = await response.text();
+
+      let result: {
+        success?: boolean;
+        analysis?: AIProductAnalysis;
+        error?: string;
+      };
+
+      try {
+        result = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Analysis endpoint returned invalid JSON (${response.status}).`,
+        );
+      }
 
       console.log("[AI Product Optimizer] Analyze response:", result);
 
-      if (!response.ok || !result.success) {
+      if (!response.ok || !result.success || !result.analysis) {
         throw new Error(result.error || "Unable to analyze product.");
       }
 
@@ -311,6 +731,83 @@ export default function ProductOptimizer() {
       setIsAnalyzing(false);
     }
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* Update Product                                                           */
+  /* ------------------------------------------------------------------------ */
+
+  function handleUpdateProduct() {
+    if (!analysis) {
+      return;
+    }
+
+    setUpdateError(null);
+    setUpdateMessage(null);
+
+    const payload: ProductUpdatePayload = {
+      title: analysis.title.suggested,
+
+      description: analysis.description.suggested,
+
+      seoTitle: analysis.seo.title.suggested,
+
+      seoDescription: analysis.seo.description.suggested,
+
+      tags: analysis.tags.suggested,
+    };
+
+    console.log(
+      "[AI Product Optimizer] Updating product with AI suggestions:",
+      payload,
+    );
+
+    updateFetcher.submit(payload, {
+      method: "POST",
+
+      encType: "application/json",
+
+      action: `/app/products/${productId}`,
+    });
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Handle update fetcher result                                             */
+  /* ------------------------------------------------------------------------ */
+
+  const isUpdating = updateFetcher.state !== "idle";
+
+  if (
+    updateFetcher.state === "idle" &&
+    updateFetcher.data?.success &&
+    !updateMessage
+  ) {
+    setUpdateMessage(
+      updateFetcher.data.message || "Product updated successfully in Shopify.",
+    );
+
+    setUpdateError(null);
+
+    /*
+     * Reload the loader so the page displays
+     * the actual values now stored in Shopify.
+     */
+    revalidator.revalidate();
+  }
+
+  if (
+    updateFetcher.state === "idle" &&
+    updateFetcher.data &&
+    !updateFetcher.data.success &&
+    !updateError
+  ) {
+    setUpdateError(updateFetcher.data.error || "Unable to update product.");
+
+    setUpdateMessage(null);
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Render                                                                   */
+  /* ------------------------------------------------------------------------ */
 
   return (
     <s-page heading="Product optimization">
@@ -331,7 +828,7 @@ export default function ProductOptimizer() {
         </div>
 
         {/* ---------------------------------------------------------------- */}
-        {/* Product hero                                                     */}
+        {/* Product Hero                                                     */}
         {/* ---------------------------------------------------------------- */}
 
         <section className="product-detail-hero">
@@ -380,15 +877,21 @@ export default function ProductOptimizer() {
               <span>↗</span>
               View in Shopify
             </a>
+
             <s-button
               variant="primary"
-              disabled={isAnalyzing}
+              disabled={isAnalyzing || isUpdating}
               onClick={handleAnalyze}
             >
               {isAnalyzing ? "Analyzing..." : "Start AI analysis"}
             </s-button>
           </div>
         </section>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Analysis Error                                                   */}
+        {/* ---------------------------------------------------------------- */}
+
         {analysisError && (
           <div className="analysis-error">
             <div className="analysis-error-icon">!</div>
@@ -399,11 +902,56 @@ export default function ProductOptimizer() {
               <p>{analysisError}</p>
             </div>
 
-            <s-button variant="secondary" onClick={handleAnalyze}>
+            <s-button
+              variant="secondary"
+              onClick={handleAnalyze}
+              disabled={isAnalyzing}
+            >
               Try again
             </s-button>
           </div>
         )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Update Success                                                   */}
+        {/* ---------------------------------------------------------------- */}
+
+        {updateMessage && (
+          <div className="analysis-success">
+            <div className="analysis-success-icon">✓</div>
+
+            <div>
+              <strong>Product updated</strong>
+
+              <p>{updateMessage}</p>
+            </div>
+          </div>
+        )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Update Error                                                     */}
+        {/* ---------------------------------------------------------------- */}
+
+        {updateError && (
+          <div className="analysis-error">
+            <div className="analysis-error-icon">!</div>
+
+            <div>
+              <strong>Update failed</strong>
+
+              <p>{updateError}</p>
+            </div>
+
+            <s-button
+              variant="secondary"
+              onClick={handleUpdateProduct}
+              disabled={isUpdating}
+            >
+              Try again
+            </s-button>
+          </div>
+        )}
+
         {/* ---------------------------------------------------------------- */}
         {/* Overview                                                         */}
         {/* ---------------------------------------------------------------- */}
@@ -431,7 +979,9 @@ export default function ProductOptimizer() {
                 <span className={`optimization optimization-${seo.type}`}>
                   <span className="optimization-icon">
                     {seo.type === "success" && "✓"}
+
                     {seo.type === "warning" && "•"}
+
                     {seo.type === "critical" && "!"}
                   </span>
 
@@ -498,7 +1048,7 @@ export default function ProductOptimizer() {
         </section>
 
         {/* ---------------------------------------------------------------- */}
-        {/* SEO analysis                                                     */}
+        {/* SEO Analysis                                                     */}
         {/* ---------------------------------------------------------------- */}
 
         <section className="detail-card">
@@ -515,7 +1065,9 @@ export default function ProductOptimizer() {
             <span className={`optimization optimization-${seo.type}`}>
               <span className="optimization-icon">
                 {seo.type === "success" && "✓"}
+
                 {seo.type === "warning" && "•"}
+
                 {seo.type === "critical" && "!"}
               </span>
 
@@ -575,7 +1127,7 @@ export default function ProductOptimizer() {
         </section>
 
         {/* ---------------------------------------------------------------- */}
-        {/* Content analysis                                                 */}
+        {/* Content Analysis                                                 */}
         {/* ---------------------------------------------------------------- */}
 
         <section className="detail-card">
@@ -637,8 +1189,14 @@ export default function ProductOptimizer() {
           </div>
         </section>
 
+        {/* ---------------------------------------------------------------- */}
+        {/* AI Results                                                       */}
+        {/* ---------------------------------------------------------------- */}
+
         {analysis && (
           <section className="ai-results">
+            {/* AI Header */}
+
             <div className="ai-results-header">
               <div>
                 <div className="eyebrow">
@@ -651,14 +1209,26 @@ export default function ProductOptimizer() {
                 <p>{analysis.summary}</p>
               </div>
 
-              <div className="ai-score">
-                <span className="ai-score-value">{analysis.score}</span>
+              <div className="ai-results-actions">
+                <div className="ai-score">
+                  <span className="ai-score-value">{analysis.score}</span>
 
-                <span className="ai-score-label">/ 100</span>
+                  <span className="ai-score-label">/ 100</span>
+                </div>
+
+                <s-button
+                  variant="primary"
+                  disabled={isUpdating}
+                  onClick={handleUpdateProduct}
+                >
+                  {isUpdating ? "Updating..." : "Update product"}
+                </s-button>
               </div>
             </div>
 
-            {/* Title */}
+            {/* ---------------------------------------------------------------- */}
+            {/* Title                                                            */}
+            {/* ---------------------------------------------------------------- */}
 
             <div className="ai-recommendation">
               <div className="ai-recommendation-header">
@@ -694,7 +1264,9 @@ export default function ProductOptimizer() {
               </div>
             </div>
 
-            {/* Description */}
+            {/* ---------------------------------------------------------------- */}
+            {/* Description                                                       */}
+            {/* ---------------------------------------------------------------- */}
 
             <div className="ai-recommendation">
               <div className="ai-recommendation-header">
@@ -719,7 +1291,11 @@ export default function ProductOptimizer() {
                 <div className="comparison suggested">
                   <span>Suggested</span>
 
-                  <p>{analysis.description.suggested}</p>
+                  <p
+                    dangerouslySetInnerHTML={{
+                      __html: analysis.description.suggested,
+                    }}
+                  />
                 </div>
               </div>
 
@@ -730,7 +1306,9 @@ export default function ProductOptimizer() {
               </div>
             </div>
 
-            {/* SEO */}
+            {/* ---------------------------------------------------------------- */}
+            {/* SEO                                                              */}
+            {/* ---------------------------------------------------------------- */}
 
             <div className="ai-recommendation">
               <div className="ai-recommendation-header">
@@ -764,7 +1342,9 @@ export default function ProductOptimizer() {
               </div>
             </div>
 
-            {/* Tags */}
+            {/* ---------------------------------------------------------------- */}
+            {/* Tags                                                             */}
+            {/* ---------------------------------------------------------------- */}
 
             <div className="ai-recommendation">
               <div className="ai-recommendation-header">
@@ -789,11 +1369,41 @@ export default function ProductOptimizer() {
                 <p>{analysis.tags.reason}</p>
               </div>
             </div>
+
+            {/* ---------------------------------------------------------------- */}
+            {/* Bottom Update                                                     */}
+            {/* ---------------------------------------------------------------- */}
+
+            <div className="ai-update-footer">
+              <div>
+                <strong>Ready to optimize?</strong>
+
+                <p>
+                  Apply the AI-generated title, description, SEO metadata and
+                  tags directly to Shopify.
+                </p>
+              </div>
+
+              <s-button
+                variant="primary"
+                disabled={isUpdating}
+                onClick={handleUpdateProduct}
+              >
+                {isUpdating ? "Updating..." : "Update product"}
+              </s-button>
+            </div>
+            <footer className="app-footer">
+              <Link to="/privacy">Privacy Policy</Link>
+
+              <Link to="/terms">Terms of Service</Link>
+
+              <Link to="/support">Support</Link>
+            </footer>
           </section>
         )}
 
         {/* ---------------------------------------------------------------- */}
-        {/* AI recommendation panel                                          */}
+        {/* AI Recommendation Panel                                          */}
         {/* ---------------------------------------------------------------- */}
 
         <section className="ai-recommendation-card">
@@ -813,7 +1423,7 @@ export default function ProductOptimizer() {
           <div className="ai-recommendation-action">
             <s-button
               variant="primary"
-              disabled={isAnalyzing}
+              disabled={isAnalyzing || isUpdating}
               onClick={handleAnalyze}
             >
               {isAnalyzing ? "Analyzing..." : "Start AI analysis"}
@@ -824,6 +1434,10 @@ export default function ProductOptimizer() {
     </s-page>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/* Headers                                                                    */
+/* -------------------------------------------------------------------------- */
 
 export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);

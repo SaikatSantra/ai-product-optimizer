@@ -2,7 +2,10 @@ import type { ActionFunctionArgs, HeadersFunction } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { createHash } from "node:crypto";
-import { generateGeminiText } from "../services/gemini.server";
+import {
+  generateGeminiText,
+  generateGeminiImageAnalysis,
+} from "../services/gemini.server";
 import prisma from "../db.server";
 
 type ProductData = {
@@ -13,6 +16,10 @@ type ProductData = {
   productType: string;
   vendor: string;
   tags: string[];
+  featuredImage: {
+    url: string;
+    altText: string | null;
+  } | null;
   seo: {
     title: string | null;
     description: string | null;
@@ -96,6 +103,11 @@ export async function action({ request, params }: ActionFunctionArgs) {
             vendor
             tags
 
+            featuredImage {
+              url
+              altText
+            }
+
             seo {
               title
               description
@@ -173,6 +185,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
       vendor: product.vendor,
       tags: [...product.tags].sort(),
       seoTitle: product.seo?.title ?? null,
+      featuredImageUrl: product.featuredImage?.url ?? null,
       seoDescription: product.seo?.description ?? null,
     });
 
@@ -214,20 +227,35 @@ export async function action({ request, params }: ActionFunctionArgs) {
     /* ------------------------------------------------------------------ */
 
     const prompt = `
-You are an expert Shopify ecommerce SEO and conversion optimization specialist.
-You are an expert Shopify e-commerce copywriter.
+You are an expert Shopify ecommerce SEO specialist,
+ecommerce copywriter, product photographer analyst,
+and conversion optimization specialist.
 
-Convert the following product text into clean, valid HTML formatting ready to paste directly into Shopify's HTML editor.
+You are analyzing a Shopify product using BOTH:
 
-CRITICAL INSTRUCTIONS for product description:
-1. DO NOT use markdown formatting anywhere (No asterisks, no hash signs like ###).
-2. DO NOT wrap the output in markdown code blocks.
-3. Start your response directly with the first HTML tag.
-4. DO NOT Use <h2> or <h3> for headings, <p> for paragraphs, and <ul><li> for lists.
+1. The product information provided below.
+2. The product image attached to this request.
 
-Product Text to Convert:
+IMPORTANT:
 
-Analyze the following Shopify product.
+The attached product image is a primary source of information.
+
+Use the image to understand:
+- What the product actually looks like
+- Product category
+- Product type
+- Visible materials
+- Visible colors
+- Shape
+- Design
+- Style
+- Intended use when reasonably apparent
+- Visible features
+- Packaging when visible
+- Visual selling points
+
+Do NOT invent information that cannot reasonably be determined
+from the image or supplied product information.
 
 PRODUCT INFORMATION
 
@@ -237,10 +265,10 @@ ${product.title}
 Handle:
 ${product.handle}
 
-Description:
+Current Description:
 ${product.description || "No description provided."}
 
-Product type:
+Product Type:
 ${product.productType || "Not provided"}
 
 Vendor:
@@ -249,27 +277,88 @@ ${product.vendor || "Not provided"}
 Tags:
 ${product.tags.length > 0 ? product.tags.join(", ") : "No tags"}
 
-SEO title:
+Current SEO Title:
 ${product.seo?.title || "Not provided"}
 
-SEO description:
+Current SEO Description:
 ${product.seo?.description || "Not provided"}
 
 
 YOUR TASK
 
-Analyze this product for:
+Analyze the product and create improved ecommerce content.
 
-1. Product title quality
-2. Product description quality
-3. SEO title
-4. SEO description
-5. Product tags
-6. Search discoverability
-7. Conversion potential
+The most important tasks are:
+
+1. Understand the product from the image.
+2. Improve the product title.
+3. Write a compelling product description.
+4. Create an SEO title.
+5. Create an SEO description.
+6. Suggest relevant Shopify product tags.
+7. Provide SEO and conversion recommendations.
 
 
-Return ONLY valid JSON.
+PRODUCT TITLE
+
+Create a clear and natural Shopify product title.
+
+The title should:
+- Clearly identify the product.
+- Use important searchable terms naturally.
+- Be useful to customers.
+- Avoid keyword stuffing.
+- Not claim features that are not supported.
+
+
+PRODUCT DESCRIPTION
+
+Create a professional Shopify product description.
+
+The description should:
+- Explain what the product is.
+- Describe visible characteristics.
+- Explain benefits when supported.
+- Help customers understand the product.
+- Be persuasive but natural.
+- Be easy to scan.
+- Use clean HTML.
+
+Use only:
+<p>
+<strong>
+<ul>
+<li>
+
+Do NOT use:
+<h1>
+<h2>
+<h3>
+Markdown
+Code blocks
+
+The description must be valid HTML.
+
+
+SEO TITLE
+
+Create a concise search-friendly SEO title.
+
+
+SEO DESCRIPTION
+
+Create a compelling SEO meta description that communicates
+the product value clearly.
+
+
+TAGS
+
+Suggest relevant Shopify product tags.
+
+Do not create irrelevant or generic tags just to increase the number.
+
+
+RETURN ONLY VALID JSON.
 
 Use exactly this structure:
 
@@ -315,23 +404,45 @@ Use exactly this structure:
 RULES
 
 - score must be an integer from 0 to 100.
-- Keep the suggested product title clear and natural.
-- Do not keyword-stuff.
-- Make the title useful for both Shopify customers and search engines.
-- Improve the description for clarity, benefits and conversion.
-- SEO title should generally be concise and search-friendly.
-- SEO description should clearly communicate product value.
-- Suggested tags must be relevant to the product.
-- Do not invent product features that are not supported by the supplied information.
-- recommendations priority must be one of: high, medium, low.
 - Return JSON only.
+- Do not use markdown.
+- Do not wrap JSON in code fences.
+- Do not invent product features.
+- Do not invent materials unless supported by the image or product data.
+- Do not invent dimensions.
+- Do not invent compatibility.
+- Do not invent certifications.
+- Do not invent warranty information.
+- Do not invent pricing.
+- Do not invent product benefits that cannot reasonably be supported.
+- Use the image as a visual source of truth.
+- Keep the title natural.
+- Avoid keyword stuffing.
+- The description must contain valid HTML.
+- recommendations priority must be one of:
+  high
+  medium
+  low
 `;
 
     /* ------------------------------------------------------------------ */
     /* Call Gemini                                                         */
     /* ------------------------------------------------------------------ */
 
-    const geminiResponse = await generateGeminiText(prompt);
+    let geminiResponse: string | null;
+
+    if (product.featuredImage?.url) {
+      geminiResponse = await generateGeminiImageAnalysis({
+        imageUrl: product.featuredImage.url,
+        prompt,
+      });
+    } else {
+      console.warn(
+        "[AI Product Optimizer] Product has no featured image. Using text analysis.",
+      );
+
+      geminiResponse = await generateGeminiText(prompt);
+    }
 
     console.log("[AI Product Optimizer] Gemini response:", geminiResponse);
 

@@ -14,6 +14,10 @@ type ProductData = {
   productType: string;
   vendor: string;
   tags: string[];
+  featuredImage: {
+    url: string;
+    altText: string | null;
+  } | null;
   seo: {
     title: string | null;
     description: string | null;

@@ -90,10 +90,7 @@ export async function loader({
   const products = responseJson.data?.products?.nodes;
 
   if (!Array.isArray(products)) {
-    console.error(
-      "Unexpected Shopify products response:",
-      responseJson,
-    );
+    console.error("Unexpected Shopify products response:", responseJson);
 
     throw new Response("Unable to load products from Shopify.", {
       status: 500,
@@ -139,9 +136,7 @@ function getSeoStatus(product: Product) {
 }
 
 function getStatusLabel(status: string): string {
-  return status
-    .toLowerCase()
-    .replaceAll("_", " ");
+  return status.toLowerCase().replaceAll("_", " ");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -180,57 +175,40 @@ export default function Dashboard() {
             <h1>Improve your products with AI</h1>
 
             <p>
-              Analyze product content, SEO and discoverability. Get
-              actionable recommendations to improve every product in
-              your store.
+              Analyze product content, SEO and discoverability. Get actionable
+              recommendations to improve every product in your store.
             </p>
           </div>
 
           <div className="hero-stats">
             <div className="hero-stat">
-              <span className="hero-stat-value">
-                {products.length}
-              </span>
+              <span className="hero-stat-value">{products.length}</span>
 
-              <span className="hero-stat-label">
-                Products
-              </span>
+              <span className="hero-stat-label">Products</span>
             </div>
 
             <div className="hero-stat-divider" />
 
             <div className="hero-stat">
-              <span className="hero-stat-value">
-                {optimizedCount}
-              </span>
+              <span className="hero-stat-value">{optimizedCount}</span>
 
-              <span className="hero-stat-label">
-                Optimized
-              </span>
+              <span className="hero-stat-label">Optimized</span>
             </div>
 
             <div className="hero-stat-divider" />
 
             <div className="hero-stat">
-              <span className="hero-stat-value">
-                {partialCount}
-              </span>
+              <span className="hero-stat-value">{partialCount}</span>
 
-              <span className="hero-stat-label">
-                Partial
-              </span>
+              <span className="hero-stat-label">Partial</span>
             </div>
 
             <div className="hero-stat-divider" />
 
             <div className="hero-stat">
-              <span className="hero-stat-value">
-                {needsWorkCount}
-              </span>
+              <span className="hero-stat-value">{needsWorkCount}</span>
 
-              <span className="hero-stat-label">
-                Needs work
-              </span>
+              <span className="hero-stat-label">Needs work</span>
             </div>
           </div>
         </section>
@@ -245,14 +223,12 @@ export default function Dashboard() {
               <h2>Product optimization</h2>
 
               <p>
-                Review your products and identify the biggest
-                optimization opportunities.
+                Review your products and identify the biggest optimization
+                opportunities.
               </p>
             </div>
 
-            <div className="workspace-meta">
-              {products.length} products
-            </div>
+            <div className="workspace-meta">{products.length} products</div>
           </div>
 
           {products.length === 0 ? (
@@ -262,8 +238,8 @@ export default function Dashboard() {
               <h3>No products found</h3>
 
               <p>
-                Products from your Shopify store will appear here
-                when they are available.
+                Products from your Shopify store will appear here when they are
+                available.
               </p>
             </div>
           ) : (
@@ -281,19 +257,13 @@ export default function Dashboard() {
                 const productId = getProductId(product.id);
 
                 return (
-                  <div
-                    className="product-row"
-                    key={product.id}
-                  >
+                  <div className="product-row" key={product.id}>
                     {/* Product */}
                     <div className="product-cell product-main">
                       {product.featuredImage ? (
                         <img
                           src={product.featuredImage.url}
-                          alt={
-                            product.featuredImage.altText ||
-                            product.title
-                          }
+                          alt={product.featuredImage.altText || product.title}
                           className="product-image"
                         />
                       ) : (
@@ -303,9 +273,7 @@ export default function Dashboard() {
                       )}
 
                       <div className="product-copy">
-                        <span className="product-title">
-                          {product.title}
-                        </span>
+                        <span className="product-title">{product.title}</span>
 
                         <span className="product-vendor">
                           {product.vendor || "No vendor"}
@@ -335,9 +303,7 @@ export default function Dashboard() {
 
                     {/* Optimization */}
                     <div className="product-cell">
-                      <span
-                        className={`optimization optimization-${seo.type}`}
-                      >
+                      <span className={`optimization optimization-${seo.type}`}>
                         <span className="optimization-icon">
                           {seo.type === "success" && "✓"}
                           {seo.type === "warning" && "•"}
@@ -355,9 +321,7 @@ export default function Dashboard() {
                         className="analyze-link"
                       >
                         Analyze
-                        <span className="analyze-arrow">
-                          →
-                        </span>
+                        <span className="analyze-arrow">→</span>
                       </Link>
                     </div>
                   </div>
@@ -373,17 +337,14 @@ export default function Dashboard() {
 
         <section className="info-grid">
           <div className="info-card">
-            <div className="info-card-icon">
-              ✦
-            </div>
+            <div className="info-card-icon">✦</div>
 
             <div>
               <h3>What AI analyzes</h3>
 
               <p>
-                Product information is evaluated across the areas
-                that matter most for search visibility and
-                conversion.
+                Product information is evaluated across the areas that matter
+                most for search visibility and conversion.
               </p>
 
               <div className="feature-list">
@@ -397,17 +358,14 @@ export default function Dashboard() {
           </div>
 
           <div className="info-card">
-            <div className="info-card-icon">
-              ↗
-            </div>
+            <div className="info-card-icon">↗</div>
 
             <div>
               <h3>Optimization workflow</h3>
 
               <p>
-                Analyze your product, review AI recommendations,
-                then apply approved improvements directly to
-                Shopify.
+                Analyze your product, review AI recommendations, then apply
+                approved improvements directly to Shopify.
               </p>
 
               <div className="workflow">
@@ -417,6 +375,25 @@ export default function Dashboard() {
                 <i>→</i>
                 <span>Apply</span>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="info-card" style={{ marginTop: "1.5rem" }}>
+          <div className="info-card-icon">?</div>
+
+          <div>
+            <h3>Merchant support</h3>
+
+            <p>
+              Need help, have feedback, or want to understand how your product
+              data is used? Visit our support and privacy pages.
+            </p>
+
+            <div className="workflow">
+              <Link to="/support">Support</Link>
+              <i>•</i>
+              <Link to="/privacy">Privacy</Link>
             </div>
           </div>
         </section>
